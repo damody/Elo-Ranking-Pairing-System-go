@@ -16,6 +16,7 @@ import (
 )
 
 var SCORE_INTERVAL int
+var BLOCK_RECENT_PLAYER_OF_GAMES int
 
 type CreateRoomData struct {
 	Id string
@@ -122,7 +123,7 @@ type ServerDead struct {
 	ServerDead string
 }
 
-type GameInforData struct {
+type GameInfoData struct {
 	Game uint32
 	Users []UserInfoData
 }
@@ -142,11 +143,11 @@ type UserInfoData struct {
 }
 
 type UserGift struct {
-	a uint16
-	b uint16
-	c uint16
-	d uint16
-	e uint16
+	A uint16
+	B uint16
+	C uint16
+	D uint16
+	E uint16
 }
 
 type SqlLoginData struct {
@@ -264,7 +265,7 @@ func get_users(ids []string, users map[string]*r.User) []*r.User {
 }
 
 func user_score(u *r.User, value int16, msgtx chan<-m.MqttMsg, sender chan<- m.SqlMsg, conn *sql.DB, mode string) {
-	topic := fmt.Sprintf("member/%d/res/login", u.Id)
+	topic := fmt.Sprintf("member/%s/res/login", u.Id)
 	msg := `{"msg":"ok"}`
 	msgtx <- m.MqttMsg{Topic: topic, Msg: msg}
 
@@ -272,22 +273,26 @@ func user_score(u *r.User, value int16, msgtx chan<-m.MqttMsg, sender chan<- m.S
 	data.Id = u.Id;
 	data.Mode = mode;
 	if (mode == "ng1p2t") {
-		data.Score = u.Ng1v1 + value
+		u.Ng1v1 += value
+		data.Score = u.Ng1v1
 		d1, _ := json.Marshal(data)
         sender <- m.SqlMsg{Event: m.UpdateScore, Msg: string(d1)}
     
     } else if (mode == "ng5p2t") {
-        data.Score = u.Ng5v5 + value
+		u.Ng5v5 += value
+		data.Score = u.Ng5v5
 		d1, _ := json.Marshal(data)
         sender <- m.SqlMsg{Event: m.UpdateScore, Msg: string(d1)}
     
     } else if (mode == "rk1p2t") {
-        data.Score = u.Rk1v1 + value
+		u.Rk1v1 += value
+		data.Score = u.Rk1v1
 		d1, _ := json.Marshal(data)
         sender <- m.SqlMsg{Event: m.UpdateScore, Msg: string(d1)}
     
     } else if (mode == "rk5p2t") {
-        data.Score = u.Rk5v5 + value
+		u.Rk5v5 += value
+		data.Score = u.Rk5v5
 		d1, _ := json.Marshal(data)
         sender <- m.SqlMsg{Event: m.UpdateScore, Msg: string(d1)}
     
@@ -391,6 +396,14 @@ func HandleSqlRequest(conn *sql.DB) {
 					}
 					if (len(UpdateInfo) > 0) {
 						// inserat game info into sql
+						tx, _ := conn.Begin()
+						for _, info := range UpdateInfo {
+							tx.Exec("insert into game_info (userid, game_id, hero, level, damage, take_damage, heal, kill_cnt, death, assist) values (?,?,?,?,?,?,?,?,?,?)", info.Id, info.Game, info.Hero, info.Level, info.Damage, info.Take_damage, info.Heal, info.Kill, info.Death, info.Assist)
+							tx.Exec("insert into user_info (userid, game_id, equ, gift_A, gift_B, gift_C, gift_D, gift_E) values (?,?,?,?,?,?,?,?)", info.Id, info.Game, info.Equ, info.Gift.A, info.Gift.B, info.Gift.C, info.Gift.D, info.Gift.E)
+
+						}
+						tx.Commit()
+						UpdateInfo = []SqlGameInfoData{}
 					}
 
 				case val := <- SqlChan:
@@ -398,9 +411,29 @@ func HandleSqlRequest(conn *sql.DB) {
 						NewUsers = append(NewUsers, val.Msg)
 
 					} else if (val.Event == m.UpdateScore) {
-
+						p := &SqlScoreData{}
+						json.Unmarshal([]byte(val.Msg), &p)
+						//fmt.Println(p)
+						tx, _ := conn.Begin()
+						if (p.Mode == "ng1p2t") {
+							sql := fmt.Sprintf("UPDATE user_ng1v1 as a JOIN user as b ON a.id=b.id SET score=%d WHERE b.userid='%s'", p.Score, p.Id)
+							tx.Exec(sql)
+						} else if (p.Mode == "ng5p2t") {
+							sql := fmt.Sprintf("UPDATE user_ng5v5 as a JOIN user as b ON a.id=b.id SET score=%d WHERE b.userid='%s'", p.Score, p.Id)
+							tx.Exec(sql)
+						} else if (p.Mode == "rk1p2t") {
+							sql := fmt.Sprintf("UPDATE user_rk1v1 as a JOIN user as b ON a.id=b.id SET score=%d WHERE b.userid='%s'", p.Score, p.Id)
+							tx.Exec(sql)
+						} else if (p.Mode == "rk5p2t") {
+							sql := fmt.Sprintf("UPDATE user_rk5v5 as a JOIN user as b ON a.id=b.id SET score=%d WHERE b.userid='%s'", p.Score, p.Id)
+							tx.Exec(sql)
+						}
+						tx.Commit()
 					} else if (val.Event == m.UpdateGameInfo) {
-
+						p := &SqlGameInfoData{}
+						json.Unmarshal([]byte(val.Msg), &p)
+						UpdateInfo = append(UpdateInfo, *p)
+						//fmt.Println(p)
 					}
 
 			}
@@ -709,6 +742,7 @@ func Init(msgtx chan<-m.MqttMsg, conn *sql.DB) {
 	QueueSender["rk1p2t"] = HandleQueueRequest(msgtx, "rk1p2t", 1, 2)
 	QueueSender["rk5p2t"] = HandleQueueRequest(msgtx, "rk5p2t", 5, 2)
 	SCORE_INTERVAL = 100
+	BLOCK_RECENT_PLAYER_OF_GAMES = 3
 
 	go func() {
 		// User
@@ -797,18 +831,23 @@ func Init(msgtx chan<-m.MqttMsg, conn *sql.DB) {
 							delete(GamingGroup, group.Game_id)
 							GamingGroup[group.Game_id] = group
 
-							app := "/home/damody/LinuxNoEditor/CF1/Binaries/Linux/CF1Server"
-							arg0 := fmt.Sprintf("-Port=%s", game_port)
-							arg1 := fmt.Sprintf("-gameid %s", group.Game_id)
-							arg2 := `-NOSTEAM`
-							cmd := exec.Command(app, arg0, arg1, arg2)
-							stdout, err := cmd.Output()
-							if err != nil {
-								fmt.Println(err.Error())
-								//return
-							}
-						
-							fmt.Print(string(stdout))
+							go func() {
+								app := "/home/damody/LinuxNoEditor/CF1/Binaries/Linux/CF1Server"
+								arg0 := fmt.Sprintf("-Port=%d", game_port)
+								arg1 := fmt.Sprintf("-gameid %d", group.Game_id)
+								arg2 := `-NOSTEAM`
+								cmd := exec.Command(app, arg0, arg1, arg2)
+								stdout, err := cmd.Output()
+								if err != nil {
+									fmt.Println(err.Error())
+									//return
+								}
+								
+								fmt.Print(string(stdout))
+							}()
+							topic := fmt.Sprintf("game/%d/res/game_signal", group.Game_id)
+							msg := fmt.Sprintf(`{"game":%d}`, group.Game_id)
+							msgtx <- m.MqttMsg{Topic: topic, Msg: msg}
 
 						case r.Cancel:
 							group.Update_names()
@@ -898,7 +937,7 @@ func Init(msgtx chan<-m.MqttMsg, conn *sql.DB) {
 					if (val.Event == m.Login) {
 						p := &UserLoginData{}
 						json.Unmarshal([]byte(val.Msg), &p)
-						fmt.Println("Login: ", p.Id)
+						//fmt.Println("Login: ", p.Id)
 						user, ok := TotalUsers[p.Id]
 						// if Totaluser contains the ID, respond "ok"
 						if (ok) {
@@ -943,7 +982,7 @@ func Init(msgtx chan<-m.MqttMsg, conn *sql.DB) {
 						success := false
 						p := &UserLogoutData{}
 						json.Unmarshal([]byte(val.Msg), &p)
-						fmt.Println("Logout: ", p.Id)
+						//fmt.Println("Logout: ", p.Id)
 						user, ok := TotalUsers[p.Id]
 						if (ok) {
 							is_null := false
@@ -1045,6 +1084,34 @@ func Init(msgtx chan<-m.MqttMsg, conn *sql.DB) {
 							msgtx <- m.MqttMsg{Topic: topic, Msg: msg}
 						}
 					} else if (val.Event == m.Close) {	
+						p := &CloseRoomData{}
+						json.Unmarshal([]byte(val.Msg), &p)
+						success := false
+						room, ok_r := TotalRoom[get_rid_by_id(p.Id, TotalUsers)]
+						if (ok_r) {
+							room.Leave_room()
+							if (room.Mode != "") {
+								t1, ok_t := QueueSender[room.Mode]
+								if (ok_t) {
+									data := RemoveRoomData{
+										Rid: get_rid_by_id(p.Id, TotalUsers),
+									}
+									d, _ := json.Marshal(data)
+									msg := string(d)
+									t1 <- m.QueueMsg{Event: m.UpdateRoom, Msg: msg}
+								}
+							}
+							success = true
+						}
+						if (success) {
+							topic := fmt.Sprintf("room/%s/res/cancel_queue", room.Master)
+							msg := `{"msg":"ok"}`
+							msgtx <- m.MqttMsg{Topic: topic, Msg: msg}
+						} else {
+							topic := fmt.Sprintf("room/%s/res/cancel_queue", room.Master)
+							msg := `{"msg":"fail"}`
+							msgtx <- m.MqttMsg{Topic: topic, Msg: msg}
+						}
 					} else if (val.Event == m.ChooseNGHero) {
 						p := &UserNGHeroData{}
 						json.Unmarshal([]byte(val.Msg), &p)
@@ -1199,10 +1266,10 @@ func Init(msgtx chan<-m.MqttMsg, conn *sql.DB) {
 							}
 						}
 					} else if (val.Event == m.UpdateGame) {
-						fmt.Println("Update Room")
+						//fmt.Println("Update Room")
 						p := &PreGameData{}
 						json.Unmarshal([]byte(val.Msg), &p)
-						fmt.Println("Update Game")
+						//fmt.Println("Update Game")
 						fg := new(r.FightGame)
 						for _, r1 := range p.Rid {
 							g := new(r.FightGroup)
@@ -1238,8 +1305,8 @@ func Init(msgtx chan<-m.MqttMsg, conn *sql.DB) {
 					} else if (val.Event == m.PreStart) {
 						p := &PrestartData{}
 						json.Unmarshal([]byte(val.Msg), &p)
-						fmt.Println("Prestart")
-						fmt.Println(p.Accept)
+						//fmt.Println("Prestart")
+						//fmt.Println(p.Accept)
 						user, ok_u := TotalUsers[p.Room]
 						if (ok_u) {
 							gid := user.Gid
@@ -1248,7 +1315,7 @@ func Init(msgtx chan<-m.MqttMsg, conn *sql.DB) {
 									g, ok_g := ReadyGroups[gid]
 									if (ok_g) {
 										if (p.Accept == true) {
-											fmt.Println("Prestart")
+											//fmt.Println("Prestart")
 						
 											g.User_ready(p.Id)
 											topic := fmt.Sprintf("room/%s/res/start_get", user.Id)
@@ -1307,7 +1374,7 @@ func Init(msgtx chan<-m.MqttMsg, conn *sql.DB) {
 							}
 						}
 					} else if (val.Event == m.PreStartGet) {
-						fmt.Println("Prestart Get")
+						//fmt.Println("Prestart Get")
 						p := &PrestartGetData{}
 						json.Unmarshal([]byte(val.Msg), &p)
 						user, ok_u := TotalUsers[p.Id]
@@ -1354,13 +1421,129 @@ func Init(msgtx chan<-m.MqttMsg, conn *sql.DB) {
 							user.Rid = 0
 						}
 					} else if (val.Event == m.StartGame) {
-						
+						p := &StartGameData{}
+						json.Unmarshal([]byte(val.Msg), &p)
+						g, ok_g := GamingGroup[p.Game]
+						if (ok_g) {
+							SendGameList(g, msgtx, conn)
+							for _, room := range g.Room_names {
+								topic := fmt.Sprintf("room/%s/res/start", room)
+								msg := fmt.Sprintf(`{"room":"%s", "msg":"start", "server":"114.32.129.195:%d", "game":%d}`, room, g.Game_port, g.Game_id)
+								msgtx <- m.MqttMsg{Topic: topic, Msg: msg}
+							}
+						}
 					} else if (val.Event == m.GameOver) {
-						
+						p := &GameOverData{}
+						json.Unmarshal([]byte(val.Msg), &p)
+						win := get_users(p.Win, TotalUsers)
+						lose := get_users(p.Lose, TotalUsers)
+						users := []string{}
+						g, ok_g := GamingGroup[p.Game]
+						if (ok_g) {
+							settlement_ng_score(win, lose, msgtx, SqlChan, conn, g.Mode)
+							for _, user := range g.User_names {
+								u, ok_u := TotalUsers[user]
+								if (ok_u) {
+									users = append(users, u.Id)
+								}
+							}
+							for _, user := range g.User_names {
+								u, ok_u := TotalUsers[user]
+								if (ok_u) {
+									// Add recent users
+									if (len(u.Recent_users) >= BLOCK_RECENT_PLAYER_OF_GAMES) {
+										u.Recent_users = append(u.Recent_users[:0], u.Recent_users[1:]...)
+									}
+									var id int
+									tmp_users := users
+									for i, tu := range tmp_users {
+										if (u.Id == tu) {
+											id = i
+											break
+										}
+									}
+									tmp_users = append(tmp_users[:id], tmp_users[id:]...)
+									u.Recent_users = append(u.Recent_users, tmp_users)
+
+									// remove room
+									room, ok_r := TotalRoom[u.Rid]
+									is_null := false
+									if (ok_r) {
+										room.Rm_user(u.Id)
+										if (len(room.Users) == 0) {
+											is_null = true
+										}
+									}
+									if (is_null) {
+										delete(TotalRoom, u.Rid)
+									}
+									delete(PreStartGroups, u.Game_id)
+									delete(GamingGroup, u.Game_id)
+									u.Rid = 0
+									u.Gid = 0
+									u.Game_id = 0
+									topic := fmt.Sprintf("member/%s/res/status", u.Id)
+									msg := fmt.Sprintf(`{"msg":"game_id = %d"}`, u.Game_id)
+									msgtx <- m.MqttMsg{Topic: topic, Msg: msg}
+								}
+							}
+						}
+						delete(GamingGroup, p.Game)
 					} else if (val.Event == m.GameInfo) {
-						
+						p := &GameInfoData{}
+						json.Unmarshal([]byte(val.Msg), &p)
+						for _, u := range p.Users {
+							equ := ""
+							for i, s := range u.Equ {
+								equ += s
+								if (i < len(u.Equ)-1) {
+									equ += ", "
+								}
+							}
+							update_info := SqlGameInfoData{
+								Game: p.Game,
+								Id: u.Id,
+								Hero: u.Hero,
+								Level: u.Level,
+								Equ: equ,
+								Damage: u.Damage,
+								Take_damage: u.Take_damage,
+								Heal: u.Heal,
+								Kill: u.Kill,
+								Death: u.Death,
+								Assist: u.Assist,
+								Gift: u.Gift,
+							}
+							d, _ := json.Marshal(update_info)
+							msg := string(d)
+							SqlChan <- m.SqlMsg{Event: m.UpdateGameInfo, Msg: msg}
+						}
 					} else if (val.Event == m.GameClose) {
-						
+						p := &GameCloseData{}
+						json.Unmarshal([]byte(val.Msg), &p)
+						g, ok_g := GamingGroup[p.Game]
+						if (ok_g) {
+							for _, user := range g.User_names {
+								u, ok_u := TotalUsers[user]
+								if (ok_u) {
+									room, ok_r := TotalRoom[u.Rid]
+									is_null := false
+									if (ok_r) {
+										room.Rm_user(u.Id)
+										room.Ready = 0
+										if (len(room.Users) == 0) {
+											is_null = true
+										}
+									}
+									if (is_null) {
+										delete(TotalRoom, u.Rid)
+									}
+									u.Rid = 0
+									u.Gid = 0
+									u.Game_id = 0
+								}
+							}
+						}
 					} else if (val.Event == m.Status) {
 						p := &StatusData{}
 						json.Unmarshal([]byte(val.Msg), &p)
@@ -1389,7 +1572,7 @@ func Init(msgtx chan<-m.MqttMsg, conn *sql.DB) {
 							g, ok_g := GamingGroup[user.Game_id]
 							if (ok_g) {
 								topic := fmt.Sprintf("member/%s/res/reconnect", p.Id)
-								msg := fmt.Sprintf(`{"server":"114.32.129.195:%s"}`, g.Game_port)
+								msg := fmt.Sprintf(`{"server":"114.32.129.195:%d"}`, g.Game_port)
 								msgtx <- m.MqttMsg{Topic: topic, Msg: msg}
 							}
 						}

@@ -14,7 +14,7 @@ func Mean(number []int32) float32 {
 	for _, i := range number {
 		sum += i
 	}
-	return float32(sum / int32(len(number)))
+	return float32(float32(sum) / float32(len(number)))
 }
 
 func Median(numbers []int32) int32 {
@@ -50,7 +50,7 @@ func (ER *EloRank) Compute_elo_team(winteam []int32, loseteam []int32) ([]int32,
 	loset := []int32{}
 	for _, score := range winteam {
 		ewin := ER.Get_expected(float32(score), float32(lose))
-		rwin := ER.Rating(float32(ewin), 0.0, float32(score))
+		rwin := ER.Rating(float32(ewin), 1.0, float32(score))
 		wint = append(wint, int32(rwin))
 	}
 	for _, score := range loseteam {

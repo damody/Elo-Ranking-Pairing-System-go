@@ -109,9 +109,9 @@ var rereconnect, _ = regexp.Compile("(\\w+)/(\\w+)/send/reconnect")
 
 var f MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Message) {	
 
-	fmt.Println(msg.Topic())
+	//fmt.Println(msg.Topic())
 	if (relogin.MatchString(msg.Topic())) {		
-		fmt.Println("Login")
+		//fmt.Println("Login")
 		substr := relogin.FindStringSubmatch(msg.Topic())[2]
 		Msg:= m.ServerMsg{Event: m.Login, Id: substr, Msg: string(msg.Payload())}
 		e.ServerChan <- Msg
@@ -152,11 +152,11 @@ var f MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Message) {
 		Msg:= m.ServerMsg{Event: m.CancelQueue, Id: substr, Msg: string(msg.Payload())}
 		e.ServerChan <- Msg
 	} else if (represtart.MatchString(msg.Topic())) {
-		fmt.Printf("Prestart1111111\n");
+		//fmt.Printf("Prestart1111111\n");
 		substr := represtart.FindStringSubmatch(msg.Topic())[2]
-		fmt.Println(substr);
+		//fmt.Println(substr);
 		substr1 := strings.Split(msg.Topic(), "/")[3]
-		fmt.Println(substr1);
+		//fmt.Println(substr1);
 		if (substr1 == "prestart") {
 			Msg:= m.ServerMsg{Event: m.PreStart, Id: substr, Msg: string(msg.Payload())}
 			e.ServerChan <- Msg
@@ -165,7 +165,7 @@ var f MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Message) {
 			e.ServerChan <- Msg
 		}
 	} else if (represtart_get.MatchString(msg.Topic())) {
-		fmt.Printf("Prestart Get\n");
+		//fmt.Printf("Prestart Get\n");
 		substr := represtart_get.FindStringSubmatch(msg.Topic())[2]
 		Msg:= m.ServerMsg{Event: m.PreStartGet, Id: substr, Msg: string(msg.Payload())}
 		e.ServerChan <- Msg
